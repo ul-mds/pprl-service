@@ -1,51 +1,177 @@
-This repository serves as a template for Python-based repositories within the UL-MDS group.
-It comes preconfigured with tools for testing, building, linting and formatting you rPython code.
+This package implements an HTTP service for PPRL based on Bloom filters.
+It covers the preprocessing and masking of records, as well as matching on masked records.
+The service is built with [FastAPI](https://fastapi.tiangolo.com/).
 
-# Prerequisites
+# Service endpoints
 
-[Poetry](https://python-poetry.org/) is the Python package manager of choice.
-[Follow the installation instructions](https://python-poetry.org/docs/) and make sure that Poetry is working on your
-machine.
+The service exposes each of the aforementioned steps as an endpoint each.
+Their behavior is freely configurable.
 
-Using [PyCharm](https://www.jetbrains.com/pycharm/) as the primary IDE is not required, but heavily encouraged.
-The instructions in this document are mostly tailored towards PyCharm.
+## Record preprocessing
 
-# Project setup
+`/transform` enables preprocessing of records using a variety of transformers that can be applied to record fields.
+These transformers can be applied to all attributes ("globally") or to single attributes.
 
-In GitHub, click on "Use this template", then "Create in a new repository".
-Enter the name of your repository and click on "Create repository".
+```python
+import httpx
 
-## With PyCharm
+r = httpx.post("http://localhost:8000/transform/", json={
+    "config": {
+        "empty_value": "error"
+    },
+    "entities": [
+        {
+            "id": "001",
+            "attributes": {
+                "given_name": "John",
+                "last_name": "Doe",
+                "date_of_birth": "05.06.1978",
+                "gender": "male"
+            }
+        }
+    ],
+    "global_transformers": {
+        "before": [
+            {
+                "name": "normalization"
+            }
+        ]
+    },
+    "attribute_transformers": [
+        {
+            "attribute_name": "date_of_birth",
+            "transformers": [
+                {
+                    "name": "date_time",
+                    "input_format": "%d.%m.%Y",
+                    "output_format": "%Y-%m-%d"
+                }
+            ]
+        },
+        {
+            "attribute_name": "gender",
+            "transformers": [
+                {
+                    "mapping": {
+                        "male": "m",
+                        "female": "f"
+                    },
+                    "default_value": "x"
+                }
+            ]
+        }
+    ]
+})
 
-Go to `Git > Clone…`.
-Enter the URL to the repository you just created and the directory you'd like to clone it to.
-Click on `Clone`.
-Confirm that you trust the project.
-PyCharm will then automatically set up a new Poetry environment with all configured dependencies for your repository.
+assert r.status_code == 200
 
-## Manually
+print(r.json()["entities"][0])
+# => {'id': '001', 'attributes': {'given_name': 'john', 'last_name': 'doe', 'date_of_birth': '1978-06-05', 'gender': 'm'}}
+```
 
-Clone the repository.
-Open a terminal and navigate to the repository.
-Run `poetry install`.
-This will create a new Poetry environment and install all dependencies.
+## Record masking
 
-# Project structure
+`/mask` enables masking of records based on Bloom filter techniques.
+It supports a variety of encoding and hardening methods, as well as control over various bit vector generation
+parameters.
 
-The [project directory](./project) is the location to put all your Python code.
-Rename it to the actual name of your code project and modify the `packages` property in `pyproject.toml` accordingly.
+```python
+import httpx
 
-The [tests directory](./tests) is where all your tests go.
-Running `pytest` on the command line will automatically pick up any tests inside that directory and execute them.
-Refer to the pytest documentation for more information on how to write your tests and get the most out of pytest.
+r = httpx.post("http://localhost:8000/mask/", json={
+    "config": {
+        "token_size": 2,
+        "hash": {
+            "function": {
+                "algorithms": ["sha1"],
+                "key": "s3cr3t_k3y"
+            },
+            "strategy": {
+                "name": "random_hash"
+            }
+        },
+        "filter": {
+            "type": "clk",
+            "filter_size": 512,
+            "hash_values": 5
+        },
+        "prepend_attribute_name": True,
+        "padding": "_",
+        "hardeners": [
+            {
+                "name": "rehash",
+                "window_size": 8,
+                "window_step": 4,
+                "samples": 2
+            }
+        ]
+    },
+    "entities": [
+        {
+            "id": "001",
+            "attributes": {
+                "given_name": "jon",
+                "last_name": "doe",
+                "date_of_birth": "1978.06.05",
+                "gender": "m"
+            }
+        }
+    ],
+    "attributes": [
+        {
+            "attribute_name": "given_name",
+            "salt": {
+                "value": "my_s33d"
+            }
+        }
+    ]
+})
 
-# Linting and auto-formatting
+assert r.status_code == 200
+print(r.json()["entities"][0])
+# => {'id': '001', 'value': 'RBDAZOkBgFOKMQGGBAJxDSfAQKCAGADyqbB+bQu6cjIkc58MJEgqBbCVgwGCoTSTA6WJA4IDkQEgEQYshQEgLA=='}
+```
 
-[Ruff](https://github.com/astral-sh/ruff) is the Python linter and formatter of choice.
-It is highly recommended to install
-the [Ruff plugin from the JetBrains Marketplace](https://plugins.jetbrains.com/plugin/20574-ruff).
-Once installed, go to `File > Settings…`, then navigate to `Tools > Ruff`.
-Make sure that "Run ruff when Reformat Code" is checked and that `Project Specific > ruff executable` points to the Ruff
-executable within your virtual environment.
-Next, go to `Tools > Actions on Save` and check "Reformat code".
-This will automatically run Ruff on a file every time it is saved.
+## Bit vector matching
+
+`/match` enables the computation of similarities between bit vector pairs.
+It implements the Dice coefficient, Jaccard index and Cosine similarity as available measures.
+
+```python
+import httpx
+
+r = httpx.post("http://localhost:8000/match/", json={
+    "config": {
+        "measure": "jaccard",
+        "threshold": 0.7
+    },
+    "domain": [
+        {
+            "id": "D001",
+            "value": "RBDAZOkBgFOKMQGGBAJxDSfAQKCAGADyqbB+bQu6cjIkc58MJEgqBbCVgwGCoTSTA6WJA4IDkQEgEQYshQEgLA=="
+        },
+        {
+            "id": "D002",
+            "value": "wsJiLptLjVHKvcoMZIR7NS3JaikIMNJiaqRKPOKaZMQEcjsp4ShuEVqSiRU0jTQWB6FIgSKikAAgEW7kpXNMsw=="
+        }
+    ],
+    "range": [
+        {
+            "id": "R001",
+            "value": "AZCMTgvQAUPImaYEaNdzBwXDGHHEDAM+pJH0L5DWdWgUY/4IJkluETLACSGytaDWA7UwhSKSUQBAEIQstQXUXA=="
+        },
+        {
+            "id": "R002",
+            "value": "QBBAYOEBgFOKMREGBAZxDSfAQKGEEAJyydB4bQO6dl4gc58EJEgiAZCVgwGCoDSXA6GIA4ODkQEgEAQEhQAgJA=="
+        }
+    ]
+})
+
+assert r.status_code == 200
+print(r.json()["matches"])
+# => [{'domain': {'id': 'D001', 'value': 'RBDAZOkBgFOKMQGGBAJxDSfAQKCAGADyqbB+bQu6cjIkc58MJEgqBbCVgwGCoTSTA6WJA4IDkQEgEQYshQEgLA=='}, 'range': {'id': 'R002', 'value': 'QBBAYOEBgFOKMREGBAZxDSfAQKGEEAJyydB4bQO6dl4gc58EJEgiAZCVgwGCoDSXA6GIA4ODkQEgEAQEhQAgJA=='}, 'similarity': 0.7771739130434783}]
+```
+
+# License
+
+MIT.
